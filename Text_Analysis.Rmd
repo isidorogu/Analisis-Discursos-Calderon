@@ -1,0 +1,421 @@
+---
+title: "Análisis de Texto, Discursos de Calderon"
+author: "Isidoro Garcia Urquieta | Alejandro Roemer"
+date: "03 de abril de 2020"
+output: pdf_document
+urlcolor: blue
+graphics: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, message = FALSE, eval = TRUE,
+                      fig.width = 6, fig.height = 4, fig.align = "right")
+
+stargazer_type = "latex"      # "text" for running in Notebook mode, "latex" when creating a pdf document.
+```
+
+
+
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(data.table)
+library(lfe)
+library(knitr)
+library(stargazer)
+library(lubridate)
+library(broom)
+library(tidytext)
+library(tm)
+library(readr)
+library(pdftools)
+library(stringi)
+library(stringr)
+library(RCT)
+```
+
+
+```{r }
+# Cargando los archivos 
+anuncios<-list.files(path = "./anuncios_politica_monetaria/", pattern = ".pdf")
+anuncios
+# Cargando todos los documentos
+base_anuncios<-map(anuncios, ~pdf_text(str_c("./anuncios_politica_monetaria/", .)))
+
+# Nombrando la lista de documentos 
+(anuncios<-str_sub(list.files(path = "./anuncios_politica_monetaria/", 
+                             pattern = ".pdf"), 
+                  end = -5))
+
+
+names(base_anuncios)<-anuncios
+
+```
+
+
+Veamos el formato en que se cargo el texto de cada documento. Vemos que las dimensiones `length` son las páginas que tiene cada documento, en su mayoría 3 páginas.  
+
+```{r warning=FALSE}
+#Dimensiones de cada documento
+map_dbl(base_anuncios, ~length(.))
+
+# Juntando las páginas en un solo cuerpo de texto ago - may
+base_anuncios[1:5]<-map(base_anuncios[1:5], ~str_c(.[1], .[2], .[3]), sep = " ")
+map_dbl(base_anuncios, ~length(.)) # length = 1 
+
+#Para septiembre que tiene dos páginas
+base_anuncios[6]<-str_c(base_anuncios[6][1], base_anuncios[6][2], sep = " ")
+map_dbl(base_anuncios, ~length(.)) # length = 1 
+```
+
+Construye una base de datos a partir de esta lista. La base inicial debe tener dos columnas: 1) Fecha y 2) Texto. 
+
+```{r R1}
+base<-tibble(fecha = names(base_anuncios), 
+             texto = flatten_chr(base_anuncios))
+
+
+
+writeLines(base$texto[1])
+
+```
+
+
+## Limpieza de la base de datos 
+
+La limpieza de la base consistirá en: 
+
+
+1) Poner la fecha en un formato correcto y 
+
+2) Detectar cuál fue la decisión de política en el documento, 
+
+
+3) Poner todo en minusculas.
+
+
+4) Construir la base en formato `tidytext`. 
+
+5) Quitar palabras conectoras (preposiciónes, adverbios, etc) y otras palabras que no forman parte del contenido de la nota.
+
+
+
+
+\bigskip 
+
+
+### Fecha de cada fila de la base 
+
+Transforma la columna de fecha para que este en el formato correcto. 
+
+```{r R2 }
+base<-
+  base %>% 
+  mutate(fecha = ymd(if_else(fecha == "ago_15", "2019-08-01", 
+                              if_else(fecha == "feb_07", "2019-02-01", 
+                                      if_else(fecha == "jun_27", "2019-06-27", 
+                                              if_else(fecha == "mar_28", "2019-03-28", 
+                                                      if_else(fecha == "may_16", "2019-05-16", "2019-09-26")))))))
+
+
+```
+
+
+### Encabezados
+
+Para detectar cuál fue la decisión de política monetaria notamos que el Banco de México siempre pone la decisión en el primer enunciado después de los encabezados. Esto es desde el caracter (194, 201, 195, 198, 194, 204). 
+
+```{r }
+str_sub(base$texto[1], start = 1, end = 194)
+str_sub(base$texto[2], start = 1, end = 201)
+str_sub(base$texto[3], start = 1, end = 195)
+str_sub(base$texto[4], start = 1, end = 198)
+str_sub(base$texto[5], start = 1, end = 194)
+str_sub(base$texto[6], start = 1, end = 204)
+```
+
+
+Quita los encabezados. Es decir, que cada texto empiece desde el caracter siguiente despues del encabezado. (Tip: usa `str_sub`).
+
+```{r R3}
+# Quitando los encabezados 
+base<-
+  base %>% 
+  mutate(texto = c(str_sub(base$texto[1], start = 195),
+                   str_sub(base$texto[2], start = 202),
+                   str_sub(base$texto[3], start = 196),
+                   str_sub(base$texto[4], start = 199),
+                   str_sub(base$texto[5], start = 195),
+                   str_sub(base$texto[6], start = 205)))
+
+```
+
+
+### Detectar cuál fue la decisión de política en el documento
+
+Extrae cuál fue la decisión de política monetaria y agrégalo a la base de datos. Primero, detecta la decision (mantener, disminuir, subir). Posteriormente, encuentra la intensidad (puntos base de cambio).   (Tip: utiliza `stri_extract_all_words` para los primero y `str_extract` para lo segundo). 
+
+```{r R4 }
+# Creamos la matriz de palabras 
+palabras<-stri_extract_all_words(base$texto, simplify = NA)
+
+# Vector de decision
+palabras[, 11]
+
+# La metemos en la base de datos 
+base<-
+  base %>%
+  mutate(decision = palabras[ , 11], 
+         puntos_cambio = palabras[, 13], 
+         puntos_cambio = if_else(puntos_cambio == "objetivo", 0, as.numeric(puntos_cambio)))
+
+```
+
+
+### Todo en minúsculas 
+
+Pon todo el texto en minúsculas.
+
+```{r R6}
+base<-
+  base %>% 
+  mutate(texto = str_to_lower(texto, locale = "es"))
+
+base<-
+  base %>% 
+  mutate(texto = str_remove_all(texto, pattern = "\\\\r"))
+
+base<-
+  base %>% 
+  mutate(texto = str_remove_all(texto, pattern = "\\\\n"))
+
+palabras<-stri_extract_all_words(base$texto, simplify = NA)
+
+```
+
+
+
+### Construir la base en formato `tidytext`. Es decir, una fila por palabra. 
+
+```{r R7}
+base_tidy<-
+  base %>%
+  unnest_tokens(palabra, texto)
+  
+
+```
+
+
+### Quitar palabras conectoras 
+
+Finalmente, quitemos las palabras conectoras. 
+
+```{r }
+base_tidy<-
+  base_tidy %>% 
+  filter(!(palabra %in% stopwords(kind = "es") ))
+
+
+
+```
+
+
+## Análisis de Texto: Frecuenca y correlación de palabras 
+
+Lo primero a analizar de cada anuncio hecho por Banxico es las palabras más comunes que utilizan en cada nota. Esto se puede hacer de varias maneras como wordclouds o con graficas de barras. 
+
+Crea una variable que indique cuantas veces aparece cada palabra en *cada* anuncio y otra que indique cuantas veces apareció en todos los anuncios.
+
+```{r R8}
+library(wordcloud)
+
+# Conteos por fecha y palabra
+base_tidy<-
+  base_tidy %>%
+  add_count(fecha, palabra, name = "veces_por_anuncio")
+
+base_tidy <-
+  base_tidy %>%
+  add_count(palabra, name = "veces_totales")
+
+```
+
+Ahora haz el `wordcloud` total y para cada fecha de anuncio. Recuerda que la base para construir la base es un `summarise` de cada palabra y su frecuencia y cada palabra, frecuencia y fecha.
+
+```{r R9, message=FALSE, warning=FALSE}
+library(wordcloud)
+
+# Para todas las notas juntas 
+base_wordcloud<-
+  base_tidy %>% 
+            group_by(palabra) %>% 
+            summarise(veces_totales = sum(veces_totales))
+
+
+wordcloud(words = base_wordcloud$palabra, base_wordcloud$veces_totales, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35,
+          colors=brewer.pal(12, "Dark2"))
+
+```
+
+Ahora hazlo para cada fecha 
+
+```{r R10, fig.height=6, fig.width=6, message=FALSE, warning=FALSE}
+library(wordcloud)
+
+# Por fecha 
+base_wordcloud<-
+  base_tidy %>% 
+  arrange(fecha) %>% 
+  group_by(palabra, fecha) %>% 
+  summarise(veces_totales = sum(veces_totales))
+
+# Para todas al mismo tiempo 
+base_wordcloud<-base_wordcloud %>% split(.$fecha)
+
+map(base_wordcloud,  ~wordcloud(words = .$palabra,
+                                .$veces_totales, min.freq = 1,
+                                max.words=200, random.order=FALSE, rot.per=0.35,
+                                colors=brewer.pal(12, "Dark2")))
+
+rm(base_wordcloud)
+
+```
+
+Notas algún cambio en el lenguaje de Banxico? Cuál? 
+
+Para saber con mejor certeza qué palabras fueron cambiando por fecha de publicación haremos otro ejercicio. Calculemos la proporción de veces que una palabra apareció en cada documento para cada fecha. Posteriormente, veamos si la proporción cambió entre fechas. 
+
+```{r }
+
+# Calculando la proporcion
+base_tidy<-
+  base_tidy %>% 
+  group_by(fecha) %>% 
+  mutate(proporcion = veces_por_anuncio / sum(veces_por_anuncio))
+
+# El mes más bonito
+base_tidy<-
+  base_tidy %>% 
+  mutate(fecha1= str_sub(as.character(month(fecha, label = T)), end = -3))
+
+#Base a nivel palabra~fecha con proporciones
+base_wide<-
+  base_tidy %>% 
+  pivot_wider(id_cols = palabra ,
+               names_from = fecha1, 
+              values_from = proporcion, values_fn = list(proporcion = sum))
+
+
+base_wide<-
+  base_wide %>% 
+  mutate_if(is.numeric, ~if_else(is.na(.),0, . ))
+
+```
+
+Haz una grafica de la proporción de palabras de cada comunicado vs el comunicado de febrero. Es decir, la proporcion de cada mes vs la proporción de febrero. Quita la palabra inflación para ayudar a la escala 
+
+```{r }
+base_wide<-
+  base_wide %>% 
+  filter(palabra != "inflación")
+
+ggplot(base_wide, aes(feb, mar, color = abs(mar - feb)))+ 
+  geom_abline(color = "gray40", lty = 2) +
+  geom_point(alpha = 0.1, size = 2.5) +
+  geom_text(aes(label = palabra), vjust = 1.5, check_overlap = T) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  labs(y = "Pr(Palabra Aparece en Marzo)", x = "Pr(Palabra Aparece en Febrero)")+
+  theme_bw()+  theme(legend.position="none")
+
+
+ggplot(base_wide, aes(feb, may, color = abs(may - feb)))+ 
+  geom_abline(color = "gray40", lty = 2) +
+  geom_point(alpha = 0.1, size = 2.5, alpha = 0.1) +
+  geom_text(aes(label = palabra), vjust = 1.5, check_overlap = T) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  labs(y = "Pr(Palabra Aparece en Mayo)", x = "Pr(Palabra Aparece en Febrero)")+
+  theme_bw()+  theme(legend.position="none")
+
+ggplot(base_wide, aes(feb, jun, color = abs(jun - feb)))+ 
+  geom_abline(color = "gray40", lty = 2) +
+  geom_point(alpha = 0.1, size = 2.5, alpha = 0.1) +
+  geom_text(aes(label = palabra), vjust = 1.5, check_overlap = T) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  labs(y = "Pr(Palabra Aparece en Junio)", x = "Pr(Palabra Aparece en Febrero)")+
+  theme_bw()+  theme(legend.position="none")
+  
+ggplot(base_wide, aes(feb, ago, color = abs(ago - feb)))+ 
+  geom_abline(color = "gray40", lty = 2) +
+  geom_point(alpha = 0.1, size = 2.5, alpha = 0.1) +
+  geom_text(aes(label = palabra), vjust = 1.5, check_overlap = T) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  labs(y = "Pr(Palabra Aparece en Agosto)", x = "Pr(Palabra Aparece en Febrero)")+
+  theme_bw()+  theme(legend.position="none")
+
+
+ggplot(base_wide, aes(sep, ago, color = abs(sep - feb)))+ 
+  geom_abline(color = "gray40", lty = 2) +
+  geom_point(alpha = 0.1, size = 2.5, alpha = 0.1) +
+  geom_text(aes(label = palabra), vjust = 1.5, check_overlap = T) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  labs(y = "Pr(Palabra Aparece en Septiembre)", x = "Pr(Palabra Aparece en Febrero)")+
+  theme_bw()+  theme(legend.position="none")
+
+```
+
+
+
+\bigskip 
+
+## Análisis de Sentimiento 
+
+Finalmente, hagamos un análisis de sentimientos de los anuncios por fecha. 
+
+El análisis de sentimiento consiste en crear un diccionario de palabras con un "sentimiento" asociado para posteriormente calificar el sentimiento de cualquier texto. Los sentimientos pueden ser divididos en categorias (enojo, felicidad, etc) o tener un puntaje que crece en número conforme el sentimiento es más positivo. En este ejemplo usaremos un puntaje que va desde -5, asociado a palabras con connotaciones negativas, a 5. 
+
+
+Carguemos un diccionario ya creado.
+```{r }
+
+lexico<-read.csv("lexico_afinn.en.es.csv")
+
+#Quitando acentos
+base_tidy<-
+  base_tidy %>% 
+  mutate(palabra = str_replace_all(palabra, pattern = "á", "a"), 
+         palabra = str_replace_all(palabra, pattern = "é", "e"),
+         palabra = str_replace_all(palabra, pattern = "í", "i"),
+         palabra = str_replace_all(palabra, pattern = "ó", "o"),
+         palabra = str_replace_all(palabra, pattern = "ú", "u"))
+
+lexico$Palabra<-iconv(lexico$Palabra, from = "latin1", to = "ASCII//TRANSLIT")
+
+base_tidy$palabra<-iconv(base_tidy$palabra, to = "ASCII//TRANSLIT")
+base_tidy<-base_tidy %>% ungroup()
+
+base_tidy<-
+  left_join(base_tidy, lexico, by = c("palabra" = "Palabra"))
+
+
+```
+
+Grafica el sentimiento del comunicado por fecha de publicación 
+
+```{r }
+ggplot(base_tidy)+geom_histogram(aes(Puntuacion))+theme_bw()+facet_wrap(~fecha)
+
+ggplot(base_tidy, aes(decision,Puntuacion))+
+  geom_violin()+geom_point()+coord_flip()+theme_bw()
+
+
+base_tidy$fecha<-as.factor(base_tidy$fecha)
+ggplot(base_tidy)+geom_boxplot(aes(fecha, Puntuacion))+theme_bw()+coord_flip()
+
+
+
+```
+
+
+
+
