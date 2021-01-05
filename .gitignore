@@ -4,3 +4,4 @@
 *.Ruserdata
 *.pdf
 *.docx
+.DS_Store
