@@ -263,26 +263,45 @@ discursos$parte[147]<-3
 rm(base_discursos, base_discursos1, contenido_x, indice, paginas)
 
 save(discursos, file =  "./Bases output/discursos.RData")
-
+load(file =  "./Bases output/discursos.RData")
 
 # Checando el resultado
 writeLines(discursos$contenido[1])
 
 
+# Quitando los numeros 
+# Localizamos los saldos de linea 
+numero_pagina<-stri_locate_last(discursos$contenido, regex = "[0-9]+")
+
+# Primero quitamos la numeracion de las paginas 
+discursos<-
+  discursos %>%
+  mutate(contenido = str_sub(contenido, end = numero_pagina[ , 1]-1))
 
 
+# 2, 22, 41
+discursos$contenido[2]<-str_sub(discursos$contenido[2], end = numero_pagina[2, 1] - 1)
+discursos$contenido[22]<-str_sub(discursos$contenido[22], end = numero_pagina[22, 1] - 1)
+discursos$contenido[41]<-str_sub(discursos$contenido[41], end = numero_pagina[41, 1] - 1)
 
 
-
-# Juntando las páginas en un solo cuerpo de texto 
-base_discursos[1:3]<-map(base_discursos[1:3], ~str_c(.[1], .[2], .[3]), sep = " ")
-map_dbl(base_anuncios, ~length(.)) # length = 1 
-
-#Para septiembre que tiene dos páginas
-base_anuncios[6]<-str_c(base_anuncios[6][1], base_anuncios[6][2], sep = " ")
-map_dbl(base_anuncios, ~length(.)) # length = 1 
+# Ver si tengo q quitar los enters y asi 
+# Quitar dobles espacio
+discursos<-
+  discursos %>% 
+  mutate(contenido = str_replace_all(contenido, "\\s+", " "))
 
 
+discursos<-
+  discursos %>% 
+  mutate(contenido = str_replace_all(contenido, "- ", ""))
+
+discursos<-
+  discursos %>% 
+  mutate(contenido = str_replace_all(contenido, "-", ""))
+
+save(discursos, file =  "./Bases output/discursos.RData")
+load(file =  "./Bases output/discursos.RData")
 
 
 # Algunos analisis por hacer 
